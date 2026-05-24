@@ -4,5 +4,5 @@ folium
 streamlit-folium
 pysal
 libpysal
-requests
+gdown
 shapely
