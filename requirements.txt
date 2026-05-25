@@ -2,7 +2,6 @@ streamlit
 geopandas
 folium
 streamlit-folium
-pysal
-libpysal
 gdown
 shapely
+pandas
