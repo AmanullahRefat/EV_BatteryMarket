@@ -10,11 +10,11 @@ import os
 st.set_page_config(layout="wide", page_title="EV Market Spatial Analytics Dashboard")
 
 st.title("Bangladesh EV Battery Market - Micro-Level Spatial Statistics")
-st.write("Analyzing Market Shares with High-Performance Performance Caching and Infographics.")
+st.write("Analyzing Market Shares with High-Performance Caching and Infographics.")
 
 FILE_ID = "1wdjRT8KbQoQ5ut-McL-NLvaOvWZ3KSBl"
 
-# 2. Optimized Spatial Data Loader (Cached)
+# 2. Optimized Spatial Data Loader (Cached with Schema Mapping)
 @st.cache_data(show_spinner=False)
 def load_and_simplify_spatial(file_id):
     local_geojson = "spatial_data.geojson"
@@ -26,22 +26,51 @@ def load_and_simplify_spatial(file_id):
     gdf = gpd.read_file(local_geojson)
     gdf = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty]
     
-    # Process string metrics to clean numeric data types
-    for col in ['F48V_Marke', 'F60V_Marke']:
+    # --- Dynamic Column Mapping Engine ---
+    cols = list(gdf.columns)
+    def match_column(keywords, fallback):
+        for c in cols:
+            if all(kw.lower() in c.lower() for kw in keywords):
+                return c
+        for c in cols:
+            if any(kw.lower() in c.lower() for kw in keywords):
+                return c
+        return fallback
+
+    # Store resolved schema keys inside a session-portable dictionary attributes
+    gdf.attrs['col_48v'] = match_column(['48v'], 'F48V_Marke')
+    gdf.attrs['col_60v'] = match_column(['60v'], 'F60V_Marke')
+    gdf.attrs['col_qty'] = match_column(['quant', 'qty', 'ev'], 'Quantity_E')
+    gdf.attrs['col_pop'] = match_column(['pop'], 'TOTAL_POP')
+    gdf.attrs['col_union'] = match_column(['union', 'uni'], 'UNION_NAME')
+    gdf.attrs['col_upazila'] = match_column(['upazila', 'upz'], 'UPAZILA_NA')
+    gdf.attrs['col_district'] = match_column(['dist'], 'DISTRICT_N')
+    gdf.attrs['col_division'] = match_column(['div'], 'DIVISION_N')
+
+    c48, c60 = gdf.attrs['col_48v'], gdf.attrs['col_60v']
+    c_qty, c_pop = gdf.attrs['col_qty'], gdf.attrs['col_pop']
+
+    # Clean text values (e.g., '60%') into floating points safely
+    for col in [c48, c60]:
         if col in gdf.columns and gdf[col].dtype == 'object':
             gdf[col] = gdf[col].astype(str).str.replace('%', '', regex=False).str.strip().astype(float)
     
-    for numeric_col in ['Quantity_E', 'TOTAL_POP', 'Quantity_48V', 'Quantity_60V']:
+    # Cast standard fields to numerical elements for math calculations
+    for numeric_col in [c_qty, c_pop]:
         if numeric_col in gdf.columns:
             gdf[numeric_col] = pd.to_numeric(gdf[numeric_col], errors='coerce').fillna(0)
             
-    # Bivariate cuts
-    for col, target in [('F48V_Marke', 'bin_48v'), ('F60V_Marke', 'bin_60v')]:
-        try:
-            gdf[target] = pd.qcut(gdf[col], 3, labels=[1, 2, 3], duplicates='drop').astype(int)
-        except Exception:
-            gdf[target] = pd.cut(gdf[col], bins=[-1, 33, 66, 101], labels=[1, 2, 3]).astype(int)
-            
+    # Compute Bivariate Matrix Splits
+    try:
+        gdf['bin_48v'] = pd.qcut(gdf[c48], 3, labels=[1, 2, 3], duplicates='drop').astype(int)
+    except Exception:
+        gdf['bin_48v'] = pd.cut(gdf[c48], bins=[-1, 33, 66, 101], labels=[1, 2, 3]).astype(int)
+        
+    try:
+        gdf['bin_60v'] = pd.qcut(gdf[c60], 3, labels=[1, 2, 3], duplicates='drop').astype(int)
+    except Exception:
+        gdf['bin_60v'] = pd.cut(gdf[c60], bins=[-1, 33, 66, 101], labels=[1, 2, 3]).astype(int)
+    
     gdf['bivariate_class'] = gdf['bin_48v'].astype(str) + "-" + gdf['bin_60v'].astype(str)
     
     if gdf.crs is None:
@@ -50,32 +79,37 @@ def load_and_simplify_spatial(file_id):
         gdf = gdf.to_crs(epsg=4326)
         
     gdf = gdf.reset_index(drop=True)
-    # Simplify geometry constraints significantly to minimize JSON footprint & optimize browser runtime
+    gdf.index = gdf.index.astype(str)
+    
+    # Compress complex geometry bounds down to improve viewport initialization speeds
     gdf['geometry'] = gdf['geometry'].simplify(tolerance=0.001, preserve_topology=True)
     return gdf
 
-# 3. Fast Tabular and KPI Analytics Aggregator (Cached separately to avoid blocking layout loads)
+# 3. Separate Analytics Caching Aggregator
 @st.cache_data
 def calculate_market_analytics(gdf_dataframe):
-    # Strip spatial metadata completely for instantaneous attribute framework sorting
+    # Keep metadata constraints local for processing inside calculation loop
+    attrs = gdf_dataframe.attrs
+    c48, c60, c_qty, c_pop = attrs['col_48v'], attrs['col_60v'], attrs['col_qty'], attrs['col_pop']
+    
     flat_df = pd.DataFrame(gdf_dataframe.drop(columns=['geometry', 'bin_48v', 'bin_60v', 'bivariate_class'], errors='ignore'))
     
     summary_metrics = {
-        "total_ev": int(flat_df['Quantity_E'].sum()),
-        "total_pop": int(flat_df['TOTAL_POP'].sum()),
-        "total_48v": int(flat_df['Quantity_48V'].sum()) if 'Quantity_48V' in flat_df.columns else int((flat_df['Quantity_E'] * (flat_df['F48V_Marke'] / 100)).sum()),
-        "total_60v": int(flat_df['Quantity_60V'].sum()) if 'Quantity_60V' in flat_df.columns else int((flat_df['Quantity_E'] * (flat_df['F60V_Marke'] / 100)).sum())
+        "total_ev": int(flat_df[c_qty].sum()),
+        "total_pop": int(flat_df[c_pop].sum()),
+        "total_48v": int((flat_df[c_qty] * (flat_df[c48] / 100)).sum()) if flat_df[c48].max() > 1.0 else int((flat_df[c_qty] * flat_df[c48]).sum()),
+        "total_60v": int((flat_df[c_qty] * (flat_df[c60] / 100)).sum()) if flat_df[c60].max() > 1.0 else int((flat_df[c_qty] * flat_df[c60]).sum())
     }
     
-    core_order = ['DIVISION_N', 'DISTRICT_N', 'UPAZILA_NA', 'UNION_NAME', 'TOTAL_POP', 'Quantity_E', 'F48V_Marke', 'F60V_Marke']
+    core_order = [attrs['col_division'], attrs['col_district'], attrs['col_upazila'], attrs['col_union'], c_pop, c_qty, c48, c60]
     existing_core = [c for c in core_order if c in flat_df.columns]
     remaining_cols = [c for c in flat_df.columns if c not in existing_core]
     
-    return flat_df[existing_core + remaining_cols], summary_metrics
+    return flat_df[existing_core + remaining_cols], summary_metrics, attrs
 
 try:
     gdf = load_and_simplify_spatial(FILE_ID)
-    table_df, metrics = calculate_market_analytics(gdf)
+    table_df, metrics, schema = calculate_market_analytics(gdf)
 except Exception as e:
     st.error(f"Initialization or file load breakdown occurred: {e}")
     st.stop()
@@ -106,9 +140,9 @@ col1, col2 = st.columns([2, 3])
 
 with col1:
     st.subheader("Fleet Distribution Profile")
-    # Quick, fast distribution chart component serving as a dynamic dashboard infographic
-    chart_data = table_df[['UPAZILA_NA', 'Quantity_E']].groupby('UPAZILA_NA').sum().sort_values(by='Quantity_E', ascending=False).head(15)
-    st.bar_chart(chart_data, y="Quantity_E", use_container_width=True)
+    # Dynamically track column values based on our mapped properties dictionary keys
+    chart_data = table_df[[schema['col_upazila'], schema['col_qty']]].groupby(schema['col_upazila']).sum().sort_values(by=schema['col_qty'], ascending=False).head(15)
+    st.bar_chart(chart_data, y=schema['col_qty'], use_container_width=True)
     st.caption("Top 15 Upazilas sorted by Total Volume distributions.")
 
 with col2:
@@ -134,7 +168,7 @@ with col2:
         gdf.__geo_interface__,
         style_function=style_function,
         tooltip=folium.GeoJsonTooltip(
-            fields=['UNION_NAME', 'F48V_Marke', 'F60V_Marke', 'Quantity_E'],
+            fields=[schema['col_union'], schema['col_48v'], schema['col_60v'], schema['col_qty']],
             aliases=['Union:', '48V Share:', '60V Share:', 'EV Volume:'],
             localize=True
         )
@@ -151,9 +185,8 @@ st.markdown("---")
 st.markdown("### 📋 Spatial Administrative Attribute Table")
 st.write("Click any column header cell below to change sort direction dynamically across all records.")
 
-# Native interactive DataFrame allows immediate spreadsheet interaction/sorting
 st.dataframe(
     table_df,
     use_container_width=True,
     height=380
-    )
+)
